@@ -1,0 +1,30 @@
+# Local credentials and private source submissions
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.zip
+*.pdf
+*.docx
+
+# Generated Linux / kernel artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.d
+Module.symvers
+modules.order
+.tmp_versions/
+sched_demo
+linux/
+linux-v6.8-devkit/
+initramfs/
+*.cpio*
+Image
+__pycache__/
+.DS_Store

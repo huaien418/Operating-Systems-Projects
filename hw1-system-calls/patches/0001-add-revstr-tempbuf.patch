@@ -1,0 +1,340 @@
+From ce7d351e38e50995e438d3d4842176a5592741bf Mon Sep 17 00:00:00 2001
+From: huaien418 <221512792+huaien418@users.noreply.github.com>
+Date: Sun, 30 Nov 2025 08:34:28 +0000
+Subject: [PATCH] Add revstr (451) and tempbuf (452) system calls on RISC-V
+
+Signed-off-by: huaien418 <221512792+huaien418@users.noreply.github.com>
+---
+ Kbuild                            |   2 +
+ Makefile                          |   2 +
+ include/linux/syscalls.h          |   7 +-
+ include/uapi/asm-generic/unistd.h |  14 ++-
+ revstr/Makefile                   |   1 +
+ revstr/revstr.c                   |  60 +++++++++++
+ tempbuf/Makefile                  |   1 +
+ tempbuf/tempbuf.c                 | 165 ++++++++++++++++++++++++++++++
+ 8 files changed, 250 insertions(+), 2 deletions(-)
+ create mode 100644 revstr/Makefile
+ create mode 100644 revstr/revstr.c
+ create mode 100644 tempbuf/Makefile
+ create mode 100644 tempbuf/tempbuf.c
+
+diff --git a/Kbuild b/Kbuild
+index 464b34a08..c45daa557 100644
+--- a/Kbuild
++++ b/Kbuild
+@@ -87,6 +87,8 @@ obj-y			+= fs/
+ obj-y			+= ipc/
+ obj-y			+= security/
+ obj-y			+= crypto/
++obj-y			+= revstr/
++obj-y			+= tempbuf/
+ obj-$(CONFIG_BLOCK)	+= block/
+ obj-$(CONFIG_IO_URING)	+= io_uring/
+ obj-$(CONFIG_RUST)	+= rust/
+diff --git a/Makefile b/Makefile
+index 997b67722..7e43a4046 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2120,3 +2120,5 @@ FORCE:
+ # Declare the contents of the PHONY variable as phony.  We keep that
+ # information in a variable so we can use it in if_changed and friends.
+ .PHONY: $(PHONY)
++#core-y += revstr/
++#core-y += tempbuf/
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index a34b0f9a9..48031041e 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1385,4 +1385,9 @@ int __sys_getsockopt(int fd, int level, int optname, char __user *optval,
+ 		int __user *optlen);
+ int __sys_setsockopt(int fd, int level, int optname, char __user *optval,
+ 		int optlen);
+-#endif
++
++/*Prototypes declare*/
++asmlinkage long sys_revstr(char __user *str, size_t n);
++asmlinkage long sys_tempbuf(int mode, void __user *data, size_t size);
++
++#endif
+\ No newline at end of file
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 45fa180cc..632ff3ceb 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -886,8 +886,20 @@ __SYSCALL(__NR_futex_waitv, sys_futex_waitv)
+ #define __NR_set_mempolicy_home_node 450
+ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
+ 
++#ifndef __NR_revstr
++#define __NR_revstr 451
++#endif
++__SYSCALL(__NR_revstr, sys_revstr)
++
++#ifndef __NR_tempbuf
++#define __NR_tempbuf 452
++#endif
++__SYSCALL(__NR_tempbuf, sys_tempbuf)
++
++#ifdef __NR_syscalls
+ #undef __NR_syscalls
+-#define __NR_syscalls 451
++#endif
++#define __NR_syscalls 453
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/revstr/Makefile b/revstr/Makefile
+new file mode 100644
+index 000000000..c2162dfcc
+--- /dev/null
++++ b/revstr/Makefile
+@@ -0,0 +1 @@
++obj-y += revstr.o
+diff --git a/revstr/revstr.c b/revstr/revstr.c
+new file mode 100644
+index 000000000..b9e9ae4e1
+--- /dev/null
++++ b/revstr/revstr.c
+@@ -0,0 +1,60 @@
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/uaccess.h>
++#include <linux/slab.h>
++
++/*
++ * sys_revstr(451)
++ * - Print "The origin string: <str>"
++ * - Reverse the string in kernel space
++ * - Print "The reversed string: <rev_str>"
++ * - Copy back to user
++ * - Return 0 on success
++ */
++SYSCALL_DEFINE2(revstr, char __user *, usr_str, size_t, n)
++{
++    char *k_str;
++    size_t i, j;
++
++    /* Basic arg check: pointer must be non-NULL, length > 0 */
++    if (!usr_str || n == 0)
++        return -EFAULT;
++
++    /* Allocate n+1 bytes for a C-string */
++    k_str = kmalloc(n + 1, GFP_KERNEL);
++    if (!k_str)
++        return -ENOMEM;
++
++    /* Copy from user space */
++    if (copy_from_user(k_str, usr_str, n)) {
++        kfree(k_str);
++        return -EFAULT;
++    }
++    k_str[n] = '\0';
++
++    /* Print original string */
++    pr_info("The origin string: %s\n", k_str);
++
++    /* In-place reverse using length n*/
++    i = 0;
++    j = n - 1;
++    while (i < j) {
++        char tmp = k_str[i];
++        k_str[i] = k_str[j];
++        k_str[j] = tmp;
++        i++;
++        j--;
++    }
++
++    /* Print reversed string */
++    pr_info("The reversed string: %s\n", k_str);
++
++    /* Copy reversed string back to user buffer */
++    if (copy_to_user(usr_str, k_str, n)) {
++        kfree(k_str);
++        return -EFAULT;
++    }
++
++    kfree(k_str); /*release memory*/
++    return 0;
++}
+diff --git a/tempbuf/Makefile b/tempbuf/Makefile
+new file mode 100644
+index 000000000..c05984b33
+--- /dev/null
++++ b/tempbuf/Makefile
+@@ -0,0 +1 @@
++obj-y += tempbuf.o
+diff --git a/tempbuf/tempbuf.c b/tempbuf/tempbuf.c
+new file mode 100644
+index 000000000..4e3ec28e8
+--- /dev/null
++++ b/tempbuf/tempbuf.c
+@@ -0,0 +1,165 @@
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/uaccess.h>
++#include <linux/slab.h>
++#include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/string.h>
++#include <linux/errno.h>
++
++struct temp_node {
++    struct list_head link;
++    char  *s;
++    size_t len;
++};
++
++static LIST_HEAD(temp_list);
++static DEFINE_MUTEX(temp_lock);
++
++enum tempbuf_mode {
++    PRINT_MODE  = 0,
++    ADD_MODE    = 1,
++    REMOVE_MODE = 2,
++};
++
++static struct temp_node *temp_find_locked(const char *key, size_t keylen)
++{
++    struct temp_node *it;
++
++    list_for_each_entry(it, &temp_list, link) {
++        if (it->len == keylen && !memcmp(it->s, key, keylen))
++            return it;
++    }
++    return NULL;
++}
++
++SYSCALL_DEFINE3(tempbuf, int, mode, void __user *, data, size_t, size)
++{
++    if (!data || size == 0)
++        return -EFAULT;
++
++    /* ADD */
++    if (mode == ADD_MODE) {
++        char *k = kmalloc(size + 1, GFP_KERNEL);
++        struct temp_node *node;
++
++        if (!k)
++            return -ENOMEM;
++
++        if (copy_from_user(k, data, size)) {
++            kfree(k);
++            return -EFAULT;
++        }
++        k[size] = '\0';
++
++        node = kzalloc(sizeof(*node), GFP_KERNEL);
++        if (!node) {
++            kfree(k);
++            return -ENOMEM;
++        }
++
++        node->s = k;
++        node->len = size;
++
++        mutex_lock(&temp_lock);
++        list_add_tail(&node->link, &temp_list);
++        mutex_unlock(&temp_lock);
++
++        pr_info("[tempbuf] Added: %s\n", k);
++        return 0;
++    }
++
++    /* REMOVE */
++    if (mode == REMOVE_MODE) {
++        char *k = kmalloc(size, GFP_KERNEL);
++        struct temp_node *hit;
++
++        if (!k)
++            return -ENOMEM;
++
++        if (copy_from_user(k, data, size)) {
++            kfree(k);
++            return -EFAULT;
++        }
++
++        mutex_lock(&temp_lock);
++        hit = temp_find_locked(k, size);
++        if (!hit) {
++            mutex_unlock(&temp_lock);
++            kfree(k);
++            return -ENOENT;
++        }
++        list_del(&hit->link);
++        mutex_unlock(&temp_lock);
++
++        pr_info("[tempbuf] Removed: %.*s\n", (int)size, k);
++
++        kfree(hit->s);
++        kfree(hit);
++        kfree(k);
++        return 0;
++    }
++
++    /* PRINT */
++    if (mode == PRINT_MODE) {
++        size_t total = 0;
++        struct temp_node *it;
++        char *out, *p;
++        bool first = true;
++        size_t copy_n;
++
++        /* 先算要輸出的總長度（含中間空白） */
++        mutex_lock(&temp_lock);
++        list_for_each_entry(it, &temp_list, link) {
++            if (total)
++                total++;        /* 空白 */
++            total += it->len;    /* 字串本身 */
++        }
++        mutex_unlock(&temp_lock);
++
++        if (total == 0) {
++            /* 空 list：user buffer 放空字串，dmesg 只印 [tempbuf] */
++            if (put_user('\0', (char __user *)data))
++                return -EFAULT;
++
++            pr_info("[tempbuf]\n");
++            return 0;   /* 實際寫入 0 個字元 */
++        }
++
++        out = kmalloc(total + 1, GFP_KERNEL);
++        if (!out)
++            return -ENOMEM;
++
++        p = out;
++        mutex_lock(&temp_lock);
++        list_for_each_entry(it, &temp_list, link) {
++            if (!first)
++                *p++ = ' ';
++            memcpy(p, it->s, it->len);
++            p += it->len;
++            first = false;
++        }
++        mutex_unlock(&temp_lock);
++        *p = '\0';
++
++        pr_info("[tempbuf] %s\n", out);
++
++        /* 寫回 user buffer，最多 size-1 個字元，最後補 '\0' */
++        copy_n = min(total, size - 1);
++
++        if (copy_to_user(data, out, copy_n)) {
++            kfree(out);
++            return -EFAULT;
++        }
++
++        if (put_user('\0', (char __user *)data + copy_n)) {
++            kfree(out);
++            return -EFAULT;
++        }
++
++        kfree(out);
++        return copy_n;   /* ✅ 依規格回傳實際寫入的字元數（不含 '\0'） */
++    }
++
++    return -EINVAL;
++}
+-- 
+2.43.0
+
